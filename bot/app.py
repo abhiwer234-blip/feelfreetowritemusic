@@ -83,14 +83,22 @@ async def start_cmd(_: Client, message: Message) -> None:
     await message.reply_text(
         "Hi, I am a Pyrogram music bot.\n\n"
         "Commands:\n"
+        "/ping\n"
         "/play song name or link\n"
         "/pause, /resume, /skip, /stop\n"
         "/queue, /current"
     )
 
 
+@bot.on_message(filters.command("ping"))
+async def ping_cmd(_: Client, message: Message) -> None:
+    log.info("Ping command received in chat %s", message.chat.id)
+    await message.reply_text("Pong. Bot is online.")
+
+
 @bot.on_message(filters.command("play"))
 async def play_cmd(_: Client, message: Message) -> None:
+    log.info("Play command received in chat %s: %s", message.chat.id, message.text)
     if not await _ensure_group(message):
         return
 
@@ -216,10 +224,20 @@ async def main() -> None:
     await calls.start()
     me = await bot.get_me()
     log.info("Started @%s", me.username)
-    await idle()
-    await calls.stop()
-    await assistant.stop()
-    await bot.stop()
+    try:
+        await idle()
+    finally:
+        for name, stop_call in (
+            ("tgcaller", calls.stop),
+            ("assistant", lambda: assistant.stop(block=False)),
+            ("bot", lambda: bot.stop(block=False)),
+        ):
+            try:
+                result = stop_call()
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                log.exception("Ignoring %s shutdown error", name)
 
 
 if __name__ == "__main__":
