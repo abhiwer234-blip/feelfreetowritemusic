@@ -5,10 +5,7 @@ from pathlib import Path
 from pyrogram import Client, filters, idle
 from pyrogram.enums import ChatType
 from pyrogram.types import Message
-from pytgcalls import PyTgCalls
-from pytgcalls.types import Update
-from pytgcalls.types.input_stream import AudioPiped
-from pytgcalls.types.stream import StreamAudioEnded
+from tgcaller import AudioConfig, TgCaller
 
 from .config import get_config
 from .queue import MusicQueue, Track
@@ -29,6 +26,7 @@ bot = Client(
     api_id=config.api_id,
     api_hash=config.api_hash,
     bot_token=config.bot_token,
+    in_memory=True,
 )
 
 assistant = Client(
@@ -36,9 +34,11 @@ assistant = Client(
     api_id=config.api_id,
     api_hash=config.api_hash,
     session_string=config.session_string,
+    in_memory=True,
 )
 
-calls = PyTgCalls(assistant)
+calls = TgCaller(assistant)
+audio_config = AudioConfig.high_quality()
 
 
 def _command_text(message: Message) -> str:
@@ -61,16 +61,20 @@ async def _ensure_group(message: Message) -> bool:
 
 
 async def play_track(chat_id: int, track: Track) -> None:
-    await calls.join_group_call(chat_id, AudioPiped(track.file_path))
+    if not calls.is_connected(chat_id):
+        await calls.join_call(chat_id, audio_config=audio_config)
+    await calls.play(chat_id, track.file_path)
 
 
 async def start_next(chat_id: int) -> Track | None:
     next_track = queues.pop_next(chat_id)
     if not next_track:
-        await calls.leave_group_call(chat_id)
+        await calls.leave_call(chat_id)
         return None
 
-    await calls.change_stream(chat_id, AudioPiped(next_track.file_path))
+    if not calls.is_connected(chat_id):
+        await calls.join_call(chat_id, audio_config=audio_config)
+    await calls.play(chat_id, next_track.file_path)
     return next_track
 
 
@@ -133,7 +137,7 @@ async def play_cmd(_: Client, message: Message) -> None:
 async def pause_cmd(_: Client, message: Message) -> None:
     if not await _ensure_group(message):
         return
-    await calls.pause_stream(message.chat.id)
+    await calls.pause(message.chat.id)
     await message.reply_text("Paused.")
 
 
@@ -141,7 +145,7 @@ async def pause_cmd(_: Client, message: Message) -> None:
 async def resume_cmd(_: Client, message: Message) -> None:
     if not await _ensure_group(message):
         return
-    await calls.resume_stream(message.chat.id)
+    await calls.resume(message.chat.id)
     await message.reply_text("Resumed.")
 
 
@@ -163,7 +167,7 @@ async def stop_cmd(_: Client, message: Message) -> None:
         return
 
     queues.clear(message.chat.id)
-    await calls.leave_group_call(message.chat.id)
+    await calls.leave_call(message.chat.id)
     await message.reply_text("Stopped and cleared queue.")
 
 
@@ -194,12 +198,12 @@ async def current_cmd(_: Client, message: Message) -> None:
     await message.reply_text(f"Now playing: {format_track(current)}\nRequested by: {current.requested_by}")
 
 
-@calls.on_stream_end()
-async def stream_end_handler(_: PyTgCalls, update: Update) -> None:
-    if not isinstance(update, StreamAudioEnded):
+@calls.on_stream_end
+async def stream_end_handler(_: TgCaller, update) -> None:
+    chat_id = getattr(update, "chat_id", None)
+    if chat_id is None:
         return
 
-    chat_id = update.chat_id
     next_track = await start_next(chat_id)
     if next_track:
         await bot.send_message(chat_id, f"Now playing: {format_track(next_track)}")
